@@ -10,7 +10,13 @@ object Native {
     const val PCM_PAUSED = -2
 
     @JvmStatic external fun init(dataDir: String, cacheDir: String, deviceName: String)
-    @JvmStatic external fun start()
+    /** Reconnects the built-in librespot player too when [connectBuiltIn]. */
+    @JvmStatic external fun start(connectBuiltIn: Boolean)
+    @JvmStatic external fun stopBuiltIn()
+
+    /** A current Web API access token for Spotify's web player, or null. Blocks. */
+    @JvmStatic external fun webToken(): String?
+    @JvmStatic external fun log(line: String)
     @JvmStatic external fun status(): String
     @JvmStatic external fun setClientId(clientId: String)
     @JvmStatic external fun beginWebLogin(): String

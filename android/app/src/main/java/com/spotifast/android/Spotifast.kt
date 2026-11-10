@@ -1,6 +1,7 @@
 package com.spotifast.android
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.content.Intent
 import android.os.Build
 import android.os.SystemClock
@@ -53,20 +54,30 @@ object Spotifast {
     /** A sign-in page is open in the browser; come back when it finishes. */
     @Volatile private var awaitingBrowser = false
 
+    private lateinit var prefs: SharedPreferences
+    private var deviceName = "Spotifast"
+
+    private val _webMode = MutableStateFlow(true)
+    /** Spotify's web player plays (true), or the built-in librespot player. */
+    val webMode: StateFlow<Boolean> = _webMode
+
     private val cache = object : LinkedHashMap<String, Pair<Long, JSONObject>>(64, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<Long, JSONObject>>?) = size > 64
     }
 
     fun init(context: Context) {
         app = context.applicationContext
+        prefs = app.getSharedPreferences("spotifast", Context.MODE_PRIVATE)
+        _webMode.value = prefs.getBoolean("web_player", true)
         val name = Build.MODEL?.takeIf { it.isNotBlank() } ?: "Android"
-        Native.init(app.filesDir.absolutePath, app.cacheDir.absolutePath, "Spotifast on $name")
+        deviceName = "Spotifast on $name"
+        Native.init(app.filesDir.absolutePath, app.cacheDir.absolutePath, deviceName)
         reported = PlayerState.parse(JSONObject(Native.state()))
         _player.value = reported
         thread(name = "spotifast-events", isDaemon = true) { eventLoop() }
         AudioOutput.start()
         refreshStatus()
-        Native.start()
+        Native.start(!_webMode.value)
     }
 
     // ------------------------------------------------------------------ events
@@ -90,7 +101,10 @@ object Spotifast {
 
     private fun handle(event: JSONObject) {
         when (event.optString("type")) {
-            "state" -> applyReported(PlayerState.parse(event.optJSONObject("state") ?: JSONObject()))
+            // The built-in player's state; Spotify's web player reports its own.
+            "state" -> if (!_webMode.value) {
+                applyReported(PlayerState.parse(event.optJSONObject("state") ?: JSONObject()))
+            }
             "playback_connecting" -> {
                 _status.value = _status.value.copy(connecting = true, connectingStep = event.optString("step"))
             }
@@ -108,6 +122,7 @@ object Spotifast {
             "playback_lost" -> refreshStatus()
             "signed_out" -> {
                 synchronized(cache) { cache.clear() }
+                WebPlayer.stop()
                 refreshStatus()
                 event.optString("reason").takeIf { it.isNotEmpty() }?.let { _messages.tryEmit(it) }
             }
@@ -126,7 +141,7 @@ object Spotifast {
         }
     }
 
-    private fun applyReported(state: PlayerState) {
+    internal fun applyReported(state: PlayerState) {
         reported = state
         var shown = state
         if (SystemClock.elapsedRealtime() < holdUntil) {
@@ -164,6 +179,9 @@ object Spotifast {
                     connecting = connecting,
                     connectingStep = if (connecting) current.connectingStep else "",
                 )
+                if (_webMode.value && fresh.web && fresh.webPlayer && WebPlayer.phase.value == WebPlayer.Phase.Off) {
+                    WebPlayer.start(app, deviceName)
+                }
             } catch (error: Throwable) {
                 Log.w(TAG, "status", error)
             }
@@ -270,7 +288,13 @@ object Spotifast {
         hold(playing = true)
         _player.value = current.copy(playing = true, at = System.currentTimeMillis())
         PlaybackService.ensureStarted(app)
-        command(JSONObject().put("cmd", "play"))
+        if (!_webMode.value) {
+            command(JSONObject().put("cmd", "play"))
+        } else if (reported.active) {
+            WebPlayer.resume()
+        } else {
+            playHere()
+        }
     }
 
     fun pause() {
@@ -278,21 +302,29 @@ object Spotifast {
         val position = current.positionNow()
         hold(playing = false)
         _player.value = current.copy(playing = false, position = position, at = System.currentTimeMillis())
-        command(JSONObject().put("cmd", "pause").put("position", position))
+        if (_webMode.value) WebPlayer.pause() else command(JSONObject().put("cmd", "pause").put("position", position))
     }
 
-    fun next() = command(JSONObject().put("cmd", "next"))
+    fun next() {
+        if (_webMode.value) WebPlayer.next() else command(JSONObject().put("cmd", "next"))
+    }
 
-    fun previous() = command(JSONObject().put("cmd", "prev"))
+    fun previous() {
+        if (_webMode.value) WebPlayer.previous() else command(JSONObject().put("cmd", "prev"))
+    }
 
     fun seek(positionMs: Long) {
         _player.value = _player.value.copy(position = positionMs, at = System.currentTimeMillis())
-        command(JSONObject().put("cmd", "seek").put("position", positionMs))
+        if (_webMode.value) WebPlayer.seek(positionMs) else command(JSONObject().put("cmd", "seek").put("position", positionMs))
     }
 
     fun setShuffle(on: Boolean) {
         _player.value = _player.value.copy(shuffle = on)
-        command(JSONObject().put("cmd", "shuffle").put("on", on))
+        if (_webMode.value) {
+            webPut("/v1/me/player/shuffle?state=$on&device_id=${WebPlayer.deviceId.orEmpty()}")
+        } else {
+            command(JSONObject().put("cmd", "shuffle").put("on", on))
+        }
     }
 
     fun cycleRepeat() {
@@ -302,33 +334,160 @@ object Spotifast {
             else -> "off"
         }
         _player.value = _player.value.copy(repeat = next)
-        command(JSONObject().put("cmd", "repeat").put("mode", next))
+        if (_webMode.value) {
+            webPut("/v1/me/player/repeat?state=$next&device_id=${WebPlayer.deviceId.orEmpty()}")
+        } else {
+            command(JSONObject().put("cmd", "repeat").put("mode", next))
+        }
     }
 
-    fun playHere() = command(JSONObject().put("cmd", "transfer"))
+    /** Moves whatever plays in this account to this phone. */
+    fun playHere() {
+        if (!_webMode.value) {
+            command(JSONObject().put("cmd", "transfer"))
+            return
+        }
+        val device = WebPlayer.deviceId ?: return notReady()
+        webPut("/v1/me/player", JSONObject().put("device_ids", JSONArray().put(device)).put("play", true))
+    }
 
-    /** Plays [context] (a playlist, album, artist or Liked Songs), starting at [track] when given. */
-    fun playContext(context: String, track: Track? = null, shuffle: Boolean? = null) {
-        val json = JSONObject().put("cmd", "load").put("context", context)
-        track?.let { json.put("track", it.uri) }
-        shuffle?.let { json.put("shuffle", it) }
-        startOptimistically(track)
-        command(json)
+    /**
+     * Plays [context] (a playlist, album, artist or Liked Songs), starting at
+     * [track] when given. [fallback] is played as a plain list if Spotify's
+     * Web API won't start the context itself (Liked Songs on some accounts).
+     */
+    fun playContext(context: String, track: Track? = null, shuffle: Boolean? = null, fallback: List<Track> = emptyList()) {
+        if (!_webMode.value) {
+            val json = JSONObject().put("cmd", "load").put("context", context)
+            track?.let { json.put("track", it.uri) }
+            shuffle?.let { json.put("shuffle", it) }
+            if (!startOptimistically(track)) return
+            command(json)
+            return
+        }
+        val device = WebPlayer.deviceId ?: return notReady()
+        if (!startOptimistically(track)) return
+        val body = JSONObject().put("context_uri", context)
+        track?.let { body.put("offset", JSONObject().put("uri", it.uri)) }
+        scope.launch {
+            try {
+                shuffle?.let { api("/v1/me/player/shuffle?state=$it&device_id=$device", "PUT") }
+                api("/v1/me/player/play?device_id=$device", "PUT", body.toString())
+            } catch (error: Throwable) {
+                if (fallback.isNotEmpty() && error is ApiException && error.status in 400..404) {
+                    val index = track?.let { wanted -> fallback.indexOfFirst { it.uri == wanted.uri } }?.coerceAtLeast(0) ?: 0
+                    playWebTracks(device, fallback, index)
+                } else {
+                    playFailed(error)
+                }
+            }
+        }
     }
 
     /** Plays a plain list of songs, starting at [index]. */
     fun playTracks(tracks: List<Track>, index: Int) {
         if (tracks.isEmpty()) return
-        val uris = JSONArray()
-        tracks.take(500).forEach { uris.put(it.uri) }
-        startOptimistically(tracks.getOrNull(index))
-        command(JSONObject().put("cmd", "load").put("tracks", uris).put("index", index))
+        if (!_webMode.value) {
+            val uris = JSONArray()
+            tracks.take(500).forEach { uris.put(it.uri) }
+            if (!startOptimistically(tracks.getOrNull(index))) return
+            command(JSONObject().put("cmd", "load").put("tracks", uris).put("index", index))
+            return
+        }
+        val device = WebPlayer.deviceId ?: return notReady()
+        if (!startOptimistically(tracks.getOrNull(index))) return
+        scope.launch {
+            try {
+                playWebTracks(device, tracks, index)
+            } catch (error: Throwable) {
+                playFailed(error)
+            }
+        }
     }
 
-    private fun startOptimistically(track: Track?) {
-        if (!_status.value.playback) {
-            _messages.tryEmit("Playback isn't connected yet.")
+    /** The Web API takes a limited list: send the chosen song and what follows. */
+    private suspend fun playWebTracks(device: String, tracks: List<Track>, index: Int) {
+        val start = index.coerceIn(0, tracks.lastIndex)
+        val uris = JSONArray()
+        tracks.subList(start, minOf(tracks.size, start + 100)).forEach { uris.put(it.uri) }
+        api("/v1/me/player/play?device_id=$device", "PUT", JSONObject().put("uris", uris).toString())
+    }
+
+    private fun webPut(path: String, body: JSONObject? = null) {
+        scope.launch {
+            try {
+                api(path, "PUT", body?.toString())
+            } catch (error: Throwable) {
+                playFailed(error)
+            }
+        }
+    }
+
+    private fun playFailed(error: Throwable) {
+        holdUntil = 0
+        applyReported(reported)
+        _messages.tryEmit(error.message ?: "Playback failed")
+    }
+
+    private fun notReady() {
+        _messages.tryEmit(
+            if (WebPlayer.phase.value == WebPlayer.Phase.Failed) WebPlayer.problem.value
+            else "Spotify's player is still starting.",
+        )
+    }
+
+    /** Spotify's web player reported what it plays. */
+    internal fun applyWebState(json: JSONObject) {
+        if (json.optBoolean("none")) {
+            // Playback moved to another device.
+            applyReported(reported.copy(active = false, playing = false))
             return
+        }
+        val repeat = when (json.optInt("repeat")) {
+            1 -> "context"
+            2 -> "track"
+            else -> "off"
+        }
+        applyReported(
+            PlayerState(
+                connected = true,
+                active = true,
+                playing = !json.optBoolean("paused", true),
+                loading = json.optBoolean("loading"),
+                position = json.optLong("position"),
+                at = System.currentTimeMillis(),
+                track = NowTrack.parse(json.optJSONObject("track")),
+                shuffle = json.optBoolean("shuffle"),
+                repeat = repeat,
+            ),
+        )
+    }
+
+    internal fun webPlayerReady() {
+        _messages.tryEmit("Spotify's player is ready on this phone")
+    }
+
+    /** Switches between Spotify's web player and the built-in librespot player. */
+    fun setWebMode(on: Boolean) {
+        if (_webMode.value == on) return
+        prefs.edit().putBoolean("web_player", on).apply()
+        _webMode.value = on
+        reported = PlayerState()
+        _player.value = reported
+        if (on) {
+            scope.launch(Dispatchers.IO) { runCatching { Native.stopBuiltIn() } }
+            refreshStatus()
+        } else {
+            WebPlayer.stop()
+            if (_status.value.playbackSaved) reconnect()
+        }
+    }
+
+    private fun startOptimistically(track: Track?): Boolean {
+        val ready = if (_webMode.value) WebPlayer.deviceId != null else _status.value.playback
+        if (!ready) {
+            _messages.tryEmit("Playback isn't connected yet.")
+            return false
         }
         val shownTrack = track?.let { NowTrack.from(it) }
         hold(playing = true, track = shownTrack)
@@ -340,6 +499,7 @@ object Spotifast {
             at = System.currentTimeMillis(),
         )
         PlaybackService.ensureStarted(app)
+        return true
     }
 
     // ----------------------------------------------------------------- Web API

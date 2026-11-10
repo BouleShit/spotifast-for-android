@@ -24,7 +24,7 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use jni::JNIEnv;
 use jni::objects::{JClass, JShortArray, JString};
-use jni::sys::{jint, jstring};
+use jni::sys::{jboolean, jint, jstring};
 use serde_json::Value;
 
 /// Runs `body`, turning an error or a panic into a Java exception and the
@@ -88,10 +88,38 @@ pub extern "system" fn Java_com_spotifast_android_Native_init<'local>(
 pub extern "system" fn Java_com_spotifast_android_Native_start<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
+    connect_built_in: jboolean,
 ) {
     guard(&mut env, (), |_| {
-        core::get()?.start();
+        core::get()?.start(connect_built_in != 0);
         Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_spotifast_android_Native_stopBuiltIn<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) {
+    guard(&mut env, (), |_| {
+        core::get()?.stop_engine();
+        Ok(())
+    })
+}
+
+/// A current Web API access token, for Spotify's web player. Null when
+/// signed out. Blocks while a refresh runs; never logged.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_spotifast_android_Native_webToken<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    guard(&mut env, std::ptr::null_mut(), |env| {
+        let core = core::get()?;
+        match core.runtime.block_on(core.web_token()) {
+            Ok(token) => java_string(env, &token),
+            Err(_) => Ok(std::ptr::null_mut()),
+        }
     })
 }
 
@@ -204,6 +232,20 @@ pub extern "system" fn Java_com_spotifast_android_Native_logs<'local>(
     _class: JClass<'local>,
 ) -> jstring {
     guard(&mut env, std::ptr::null_mut(), |env| java_string(env, &logbuf::text()))
+}
+
+/// A line from the app (Spotify's web player console) for the debug log.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_spotifast_android_Native_log<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    line: JString<'local>,
+) {
+    guard(&mut env, (), |env| {
+        let line = string(env, &line)?;
+        log::info!(target: "spotifast_android::web", "{line}");
+        Ok(())
+    })
 }
 
 /// The latest playback state as JSON.

@@ -13,6 +13,8 @@ data class Status(
     val product: String = "",
     val playbackSaved: Boolean = false,
     val playback: Boolean = false,
+    /** The Web API grant carries what Spotify's web player needs. */
+    val webPlayer: Boolean = false,
     val connecting: Boolean = false,
     /** What the playback connection is doing right now. */
     val connectingStep: String = "",
@@ -28,6 +30,7 @@ data class Status(
             product = json.optString("product"),
             playbackSaved = json.optBoolean("playbackSaved"),
             playback = json.optBoolean("playback"),
+            webPlayer = json.optBoolean("webPlayer"),
         )
     }
 }

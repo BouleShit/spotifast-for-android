@@ -6,3 +6,8 @@
 -dontwarn org.conscrypt.**
 -dontwarn org.bouncycastle.**
 -dontwarn org.openjsse.**
+
+# Spotify's web player calls these from JavaScript.
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}

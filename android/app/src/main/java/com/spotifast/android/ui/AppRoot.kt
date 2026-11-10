@@ -32,7 +32,13 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import android.view.ViewGroup
+import androidx.compose.foundation.layout.size
+import androidx.compose.runtime.key
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import com.spotifast.android.Spotifast
+import com.spotifast.android.WebPlayer
 
 sealed interface Route {
     val key: String
@@ -98,7 +104,21 @@ private fun MainScreen(snackbar: SnackbarHostState) {
         }
     }
 
+    val webPlayerView by WebPlayer.view.collectAsStateWithLifecycle()
     Box(Modifier.fillMaxSize()) {
+        // Spotify's web player, attached (one pixel, behind everything)
+        // while the app is open; it keeps playing detached in the background.
+        webPlayerView?.let { web ->
+            key(web) {
+                AndroidView(
+                    factory = {
+                        (web.parent as? ViewGroup)?.removeView(web)
+                        web
+                    },
+                    modifier = Modifier.size(1.dp),
+                )
+            }
+        }
         Scaffold(
             containerColor = Window,
             snackbarHost = { SnackbarHost(snackbar) },

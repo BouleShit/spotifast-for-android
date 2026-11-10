@@ -134,7 +134,7 @@ fun CollectionScreen(route: Route.Collection, status: Status, open: (Route) -> U
                 Spacer(Modifier.height(14.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Button(
-                        onClick = { Spotifast.playContext(context, tracks.items.firstOrNull(), shuffle = false) },
+                        onClick = { Spotifast.playContext(context, tracks.items.firstOrNull(), shuffle = false, fallback = tracks.items.toList()) },
                         enabled = context.isNotEmpty(),
                         colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = OnAccent),
                     ) {
@@ -143,7 +143,7 @@ fun CollectionScreen(route: Route.Collection, status: Status, open: (Route) -> U
                         Text("Play", fontWeight = FontWeight.SemiBold)
                     }
                     OutlinedButton(
-                        onClick = { Spotifast.playContext(context, null, shuffle = true) },
+                        onClick = { Spotifast.playContext(context, null, shuffle = true, fallback = tracks.items.shuffled()) },
                         enabled = context.isNotEmpty(),
                     ) {
                         Icon(Icons.Filled.Shuffle, contentDescription = null, modifier = Modifier.size(20.dp))
@@ -158,7 +158,9 @@ fun CollectionScreen(route: Route.Collection, status: Status, open: (Route) -> U
         }
         itemsIndexed(tracks.items, key = { index, track -> "$index:${track.uri}" }) { _, track ->
             TrackRow(track, current = track.uri == playingUri, showImage = route.kind != "album") {
-                Spotifast.playContext(context, track)
+                // Artist pages and some Liked Songs libraries can't be started as a
+                // context through the Web API; the loaded list plays instead.
+                Spotifast.playContext(context, track, fallback = tracks.items.toList())
             }
         }
         item {

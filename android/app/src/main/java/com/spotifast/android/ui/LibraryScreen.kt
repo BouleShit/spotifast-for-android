@@ -48,6 +48,8 @@ import androidx.compose.ui.unit.dp
 import com.spotifast.android.Item
 import com.spotifast.android.Spotifast
 import com.spotifast.android.Status
+import com.spotifast.android.WebPlayer
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 
 private val FILTERS = listOf("Playlists", "Albums", "Artists")
@@ -58,6 +60,7 @@ fun LibraryScreen(status: Status, open: (Route) -> Unit) {
     var filter by rememberSaveable { mutableStateOf(0) }
     var menu by remember { mutableStateOf(false) }
     var showLog by remember { mutableStateOf(false) }
+    val webMode by Spotifast.webMode.collectAsStateWithLifecycle()
     if (showLog) DebugLogDialog(onDismiss = { showLog = false })
     val listState = rememberLazyListState()
 
@@ -109,6 +112,13 @@ fun LibraryScreen(status: Status, open: (Route) -> Unit) {
                             onClick = { menu = false },
                             enabled = false,
                         )
+                        DropdownMenuItem(
+                            text = { Text(if (webMode) "Use the built-in player" else "Use Spotify's web player") },
+                            onClick = {
+                                menu = false
+                                Spotifast.setWebMode(!webMode)
+                            },
+                        )
                         DropdownMenuItem(text = { Text("Debug log") }, onClick = {
                             menu = false
                             showLog = true
@@ -121,7 +131,7 @@ fun LibraryScreen(status: Status, open: (Route) -> Unit) {
                 }
             }
         }
-        item { PlaybackCard(status) }
+        item { if (webMode) WebPlayerCard(status) else PlaybackCard(status) }
         item {
             Row(
                 Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
@@ -240,6 +250,59 @@ private fun PlaybackCard(status: Status) {
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = OnAccent),
                 ) { Text("Turn on playback") }
+            }
+        }
+    }
+}
+
+/** Sets up Spotify's web player on this phone, or says why it can't play. */
+@Composable
+private fun WebPlayerCard(status: Status) {
+    val phase by WebPlayer.phase.collectAsStateWithLifecycle()
+    val problem by WebPlayer.problem.collectAsStateWithLifecycle()
+    if (status.webPlayer && phase == WebPlayer.Phase.Ready) return
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(Panel)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        when {
+            !status.webPlayer -> {
+                Text("Play music on this phone", color = TextMain, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Spotifast plays through Spotify's own web player. Spotify asks you to approve once more, so it can play here.",
+                    color = TextSecondary,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Button(
+                    onClick = {
+                        scope.launch {
+                            Spotifast.beginWebLogin(status.clientId)?.let { openBrowser(context, it) }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = OnAccent),
+                ) { Text("Approve") }
+            }
+            phase == WebPlayer.Phase.Failed -> {
+                Text("Spotify's player couldn't start", color = TextMain, fontWeight = FontWeight.SemiBold)
+                if (problem.isNotEmpty()) {
+                    Text(problem, color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                }
+                Button(
+                    onClick = { WebPlayer.restart(context) },
+                    colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = OnAccent),
+                ) { Text("Try again") }
+            }
+            else -> Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(color = Accent, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(12.dp))
+                Text("Starting Spotify's player…", color = TextMain)
             }
         }
     }

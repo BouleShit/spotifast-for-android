@@ -32,6 +32,19 @@ as the desktop, see `docs/_guide/getting-started.md`):
 The sign-in pages open in your browser and come back to the app through a
 listener on `127.0.0.1` inside the app, as on the desktop.
 
+## Two players
+
+Spotify refuses audio keys to librespot for many accounts, mostly newer
+ones (see `docs/_guide/troubleshooting.md`). So by default the app plays
+through **Spotify's own web player** (the Web Playback SDK), hidden inside
+the app: Spotify's player plays, as Soloist does on the desktop, and
+Spotifast tells it what to play through the Web API. It needs one more
+approval with the `streaming` and `user-read-email` permissions.
+
+The ⋮ menu switches to the **built-in player** (librespot, the desktop's
+built-in player) for accounts it works with. **Debug log** in the same menu
+shows what either player reports.
+
 ## What's inside
 
 | Part | Where | What it does |

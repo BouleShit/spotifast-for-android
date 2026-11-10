@@ -26,6 +26,32 @@ const API_ROOT: &str = "https://api.spotify.com";
 /// A `Retry-After` up to this long is waited out once; longer ones are
 /// reported so the interface can say so instead of hanging.
 const RETRY_AFTER_LIMIT: Duration = Duration::from_secs(8);
+/// What the Android app asks the personal app for: Spotifast's Web API
+/// scopes (auth::WEB_SCOPES) plus the two Spotify's web player needs to
+/// play on this phone (Web Playback SDK: streaming, user-read-email).
+pub const ANDROID_WEB_SCOPES: &[&str] = &[
+    "ugc-image-upload",
+    "playlist-modify-private",
+    "playlist-modify-public",
+    "playlist-read-collaborative",
+    "playlist-read-private",
+    "user-follow-modify",
+    "user-follow-read",
+    "user-library-modify",
+    "user-library-read",
+    "user-modify-playback-state",
+    "user-read-playback-position",
+    "user-read-playback-state",
+    "user-read-private",
+    "user-read-recently-played",
+    "user-top-read",
+    "streaming",
+    "user-read-email",
+];
+
+/// The scopes Spotify's web player needs on the access token.
+pub const WEB_PLAYER_SCOPES: &[&str] = &["streaming", "user-read-email", "user-read-private"];
+
 /// A playback connection that takes longer than this has stalled.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -157,7 +183,13 @@ impl Core {
     /// What the app needs to decide which screen to show.
     pub async fn status(&self) -> Value {
         let settings = self.settings();
-        let web = self.web.lock().await.is_some();
+        let (web, web_player) = {
+            let token = self.web.lock().await;
+            (
+                token.is_some(),
+                token.as_ref().is_some_and(|token| token.has_scopes(WEB_PLAYER_SCOPES)),
+            )
+        };
         let engine = self.engine();
         json!({
             "clientId": settings.client_id,
@@ -168,13 +200,14 @@ impl Core {
             "product": settings.product,
             "playbackSaved": self.saved_playback_credentials().is_some(),
             "playback": engine.is_some(),
+            "webPlayer": web_player,
             "deviceId": engine.map(|engine| engine.device_id().to_string()).unwrap_or_default(),
         })
     }
 
     /// Called once the app is up: reconnects playback from the saved
     /// credential, if there is one.
-    pub fn start(&'static self) {
+    pub fn start(&'static self, connect_built_in: bool) {
         self.runtime.spawn(async move {
             if self.web.lock().await.is_none() {
                 return;
@@ -185,12 +218,24 @@ impl Core {
                     Err(error) => log::warn!("account check failed: {error:#}"),
                 }
             }
+            if !connect_built_in {
+                return;
+            }
             if let Some(credentials) = self.saved_playback_credentials() {
                 if let Err(error) = self.connect_engine(credentials).await {
                     self.events.error("playback", format!("{error:#}"));
                 }
             }
         });
+    }
+
+    /// Stops the built-in player and leaves Spotify Connect, keeping its
+    /// saved credential for later.
+    pub fn stop_engine(&self) {
+        if let Some(engine) = self.engine.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            engine.shutdown();
+        }
+        self.events.reset_state();
     }
 
     fn saved_playback_credentials(&self) -> Option<librespot_core::authentication::Credentials> {
@@ -213,7 +258,10 @@ impl Core {
     /// Starts the Web API sign-in and returns the URL to open.
     pub fn begin_web_login(&'static self) -> Result<String> {
         let client_id = self.settings().client_id;
-        let grant = Grant::personal_web_api(&client_id)?;
+        let grant = Grant {
+            scopes: ANDROID_WEB_SCOPES,
+            ..Grant::personal_web_api(&client_id)?
+        };
         let (listener, cancel) = self.reserve_port(&self.web_login, grant.redirect_port)?;
         let flow = auth::begin(grant.clone());
         let url = flow.url.clone();
