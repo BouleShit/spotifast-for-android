@@ -14,6 +14,8 @@ data class Status(
     val playbackSaved: Boolean = false,
     val playback: Boolean = false,
     val connecting: Boolean = false,
+    /** What the playback connection is doing right now. */
+    val connectingStep: String = "",
 ) {
     companion object {
         fun parse(json: JSONObject) = Status(

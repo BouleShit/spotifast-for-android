@@ -194,7 +194,16 @@ private fun PlaybackCard(status: Status) {
             status.connecting -> Row(verticalAlignment = Alignment.CenterVertically) {
                 CircularProgressIndicator(color = Accent, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(12.dp))
-                Text("Connecting playback…", color = TextMain)
+                Column {
+                    Text("Connecting playback…", color = TextMain)
+                    if (status.connectingStep.isNotEmpty()) {
+                        Text(
+                            status.connectingStep.replaceFirstChar { it.uppercase() },
+                            color = TextSecondary,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
             }
             status.playbackSaved -> {
                 Text("Playback is disconnected", color = TextMain, fontWeight = FontWeight.SemiBold)

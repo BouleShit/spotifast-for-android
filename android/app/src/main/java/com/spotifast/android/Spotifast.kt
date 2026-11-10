@@ -91,8 +91,13 @@ object Spotifast {
     private fun handle(event: JSONObject) {
         when (event.optString("type")) {
             "state" -> applyReported(PlayerState.parse(event.optJSONObject("state") ?: JSONObject()))
-            "playback_connecting" -> _status.value = _status.value.copy(connecting = true)
+            "playback_connecting" -> {
+                _status.value = _status.value.copy(connecting = true, connectingStep = event.optString("step"))
+            }
             "web_signed_in", "playback_ready" -> {
+                if (event.optString("type") == "playback_ready") {
+                    _status.value = _status.value.copy(connecting = false, connectingStep = "")
+                }
                 refreshStatus()
                 if (awaitingBrowser) {
                     awaitingBrowser = false
@@ -112,7 +117,10 @@ object Spotifast {
                     awaitingBrowser = false
                     SignInService.stop(app)
                 }
-                if (where == "playback_login" || where == "playback") refreshStatus()
+                if (where == "playback_login" || where == "playback" || where == "panic") {
+                    _status.value = _status.value.copy(connecting = false, connectingStep = "")
+                    refreshStatus()
+                }
                 _messages.tryEmit(event.optString("message"))
             }
         }
@@ -149,9 +157,13 @@ object Spotifast {
     fun refreshStatus() {
         scope.launch(Dispatchers.IO) {
             try {
-                val connecting = _status.value.connecting
                 val fresh = Status.parse(JSONObject(Native.status()))
-                _status.value = fresh.copy(connecting = connecting && !fresh.playback && fresh.playbackSaved)
+                val current = _status.value
+                val connecting = current.connecting && !fresh.playback
+                _status.value = fresh.copy(
+                    connecting = connecting,
+                    connectingStep = if (connecting) current.connectingStep else "",
+                )
             } catch (error: Throwable) {
                 Log.w(TAG, "status", error)
             }

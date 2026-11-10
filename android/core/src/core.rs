@@ -26,6 +26,8 @@ const API_ROOT: &str = "https://api.spotify.com";
 /// A `Retry-After` up to this long is waited out once; longer ones are
 /// reported so the interface can say so instead of hanging.
 const RETRY_AFTER_LIMIT: Duration = Duration::from_secs(8);
+/// A playback connection that takes longer than this has stalled.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Settings {
@@ -56,6 +58,9 @@ pub struct Core {
     engine: Mutex<Option<Arc<Engine>>>,
     /// Serialises engine starts so two connects never race.
     connecting: tokio::sync::Mutex<()>,
+    /// What the playback connection is doing, for the interface and for
+    /// the error when it stalls.
+    step: Mutex<String>,
     web_login: Mutex<Option<watch::Sender<bool>>>,
     playback_login: Mutex<Option<watch::Sender<bool>>>,
 }
@@ -71,6 +76,15 @@ pub fn init(data_dir: &str, cache_dir: &str, device_name: &str) -> Result<&'stat
     if let Some(core) = CORE.get() {
         return Ok(core);
     }
+    // A panic on a runtime task would otherwise vanish without a trace and
+    // leave the interface waiting: report it like any other error.
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(core) = CORE.get() {
+            core.events.error("panic", format!("Internal error: {info}"));
+        }
+        previous(info);
+    }));
     let data_dir = PathBuf::from(data_dir);
     let cache_dir = PathBuf::from(cache_dir);
     std::fs::create_dir_all(&data_dir).context("cannot create the data folder")?;
@@ -103,6 +117,7 @@ pub fn init(data_dir: &str, cache_dir: &str, device_name: &str) -> Result<&'stat
         web: tokio::sync::Mutex::new(web),
         engine: Mutex::new(None),
         connecting: tokio::sync::Mutex::new(()),
+        step: Mutex::new(String::new()),
         web_login: Mutex::new(None),
         playback_login: Mutex::new(None),
         data_dir,
@@ -401,12 +416,39 @@ impl Core {
         if let Some(old) = self.engine.lock().unwrap_or_else(|p| p.into_inner()).take() {
             old.shutdown();
         }
-        self.events.emit(json!({ "type": "playback_connecting" }));
-        let engine = Engine::connect(self, credentials).await?;
+        self.set_step("starting");
+        // On its own task, so a panic comes back as an error, and with a
+        // deadline, so a stalled request cannot hold every later attempt.
+        let mut attempt = tokio::spawn(Engine::connect(self, credentials));
+        let engine = match tokio::time::timeout(CONNECT_TIMEOUT, &mut attempt).await {
+            Ok(Ok(result)) => result.with_context(|| format!("Playback failed while {}", self.step()))?,
+            Ok(Err(join)) if join.is_panic() => {
+                bail!("Playback crashed while {}: {}", self.step(), panic_text(join.into_panic()))
+            }
+            Ok(Err(join)) => bail!("Playback stopped while {}: {join}", self.step()),
+            Err(_) => {
+                attempt.abort();
+                bail!(
+                    "Spotify didn't answer while {} (waited {} s).",
+                    self.step(),
+                    CONNECT_TIMEOUT.as_secs()
+                )
+            }
+        };
         let device_id = engine.device_id().to_string();
         *self.engine.lock().unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(engine));
         self.events.emit(json!({ "type": "playback_ready", "deviceId": device_id }));
         Ok(())
+    }
+
+    /// Records and shows what the playback connection is doing.
+    pub fn set_step(&self, step: &str) {
+        *self.step.lock().unwrap_or_else(|p| p.into_inner()) = step.to_string();
+        self.events.emit(json!({ "type": "playback_connecting", "step": step }));
+    }
+
+    fn step(&self) -> String {
+        self.step.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     /// Called by the engine when its session ends on its own (network loss,
@@ -496,6 +538,14 @@ impl Core {
         }
         Err(last_error.unwrap_or_else(|| anyhow!("port {port} is unavailable")))
     }
+}
+
+fn panic_text(panic: Box<dyn std::any::Any + Send>) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|text| text.to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".to_string())
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {

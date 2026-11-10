@@ -56,6 +56,7 @@ impl Engine {
             Some(AUDIO_CACHE_LIMIT),
         )
         .map_err(|error| anyhow!("cannot open the playback cache: {error}"))?;
+        core.set_step("starting the player");
         let session = Session::new(session_config, Some(cache));
 
         let player_config = PlayerConfig {
@@ -90,6 +91,16 @@ impl Engine {
             Arc::clone(&active),
         ));
 
+        // Spirc asks for this first; asking here, with a deadline, says
+        // which part stalls when one does. Spirc then reuses the token.
+        core.set_step("getting a client token from Spotify");
+        match tokio::time::timeout(Duration::from_secs(25), session.spclient().client_token()).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => bail!("Spotify refused the client token: {error}"),
+            Err(_) => bail!("Spotify didn't answer the client token request"),
+        }
+
+        core.set_step("signing in to Spotify");
         let connect_config = ConnectConfig {
             name: core.device_name.clone(),
             device_type: DeviceType::Smartphone,
@@ -109,6 +120,7 @@ impl Engine {
         .map_err(|error| anyhow!("{error}"))
         .context("unable to connect to Spotify")?;
 
+        core.set_step("announcing this phone on Spotify Connect");
         let device_id = session.device_id().to_string();
         let shutting_down = Arc::new(AtomicBool::new(false));
         {
