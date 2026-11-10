@@ -32,5 +32,10 @@
             android:name=".PlaybackService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
+
+        <service
+            android:name=".SignInService"
+            android:exported="false"
+            android:foregroundServiceType="shortService" />
     </application>
 </manifest>

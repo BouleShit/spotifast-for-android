@@ -96,6 +96,7 @@ object Spotifast {
                 refreshStatus()
                 if (awaitingBrowser) {
                     awaitingBrowser = false
+                    SignInService.stop(app)
                     bringToFront()
                 }
             }
@@ -107,6 +108,10 @@ object Spotifast {
             }
             "error" -> {
                 val where = event.optString("where")
+                if (where == "web_login" || where == "playback_login") {
+                    awaitingBrowser = false
+                    SignInService.stop(app)
+                }
                 if (where == "playback_login" || where == "playback") refreshStatus()
                 _messages.tryEmit(event.optString("message"))
             }
@@ -153,6 +158,12 @@ object Spotifast {
         }
     }
 
+    /** Keeps the app awake until the browser hands the approval back. */
+    private fun beganSignIn() {
+        awaitingBrowser = true
+        SignInService.start(app)
+    }
+
     /** Closes the sign-in tab by bringing the app back over it. */
     private fun bringToFront() {
         try {
@@ -176,7 +187,7 @@ object Spotifast {
     suspend fun beginWebLogin(clientId: String): String? = withContext(Dispatchers.IO) {
         try {
             Native.setClientId(clientId)
-            Native.beginWebLogin().also { awaitingBrowser = true }
+            Native.beginWebLogin().also { beganSignIn() }
         } catch (error: Throwable) {
             _messages.tryEmit(error.message ?: "Sign-in failed")
             null
@@ -185,7 +196,7 @@ object Spotifast {
 
     suspend fun beginPlaybackLogin(): String? = withContext(Dispatchers.IO) {
         try {
-            Native.beginPlaybackLogin().also { awaitingBrowser = true }
+            Native.beginPlaybackLogin().also { beganSignIn() }
         } catch (error: Throwable) {
             _messages.tryEmit(error.message ?: "Playback setup failed")
             null
