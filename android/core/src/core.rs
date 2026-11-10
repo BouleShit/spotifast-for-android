@@ -164,6 +164,12 @@ impl Core {
             if self.web.lock().await.is_none() {
                 return;
             }
+            if self.settings().account_id.is_empty() {
+                match self.verify_account().await {
+                    Ok(_) => self.events.emit(json!({ "type": "web_signed_in" })),
+                    Err(error) => log::warn!("account check failed: {error:#}"),
+                }
+            }
             if let Some(credentials) = self.saved_playback_credentials() {
                 if let Err(error) = self.connect_engine(credentials).await {
                     self.events.error("playback", format!("{error:#}"));
@@ -222,7 +228,11 @@ impl Core {
     async fn verify_account(&self) -> Result<Value> {
         let (status, body) = self.api("GET", "/v1/me", None).await?;
         if status != 200 {
-            bail!("Spotify answered {status} when reading the account");
+            let reason = serde_json::from_str::<Value>(&body)
+                .ok()
+                .and_then(|value| value["error"]["message"].as_str().map(str::to_string))
+                .unwrap_or_default();
+            bail!("Spotify answered {status} when reading the account {reason}");
         }
         let me: Value = serde_json::from_str(&body).context("unreadable account")?;
         let id = me["id"].as_str().unwrap_or_default().to_string();
@@ -341,8 +351,15 @@ impl Core {
 
     /// Starts the playback approval and returns the URL to open.
     pub fn begin_playback_login(&'static self) -> Result<String> {
-        if self.settings().account_id.is_empty() {
+        if self.runtime.block_on(async { self.web.lock().await.is_none() }) {
             bail!("Sign in with your Spotify app first.");
+        }
+        if self.settings().account_id.is_empty() {
+            // The account check right after sign-in can fail (the app was
+            // frozen in the background, a slow network): try it again now.
+            if let Err(error) = self.runtime.block_on(self.verify_account()) {
+                log::warn!("account check failed again: {error:#}");
+            }
         }
         let grant = Grant::playback();
         let (listener, cancel) = self.reserve_port(&self.playback_login, grant.redirect_port)?;
@@ -353,12 +370,14 @@ impl Core {
                 let code = auth::wait_for_code_on_listener(listener, &flow.state, cancel).await?;
                 let response =
                     auth::exchange_code(&self.http, &grant, &code, &flow.verifier).await?;
-                let account = self.settings().account_id;
-                if account.is_empty() {
+                if self.web.lock().await.is_none() {
                     bail!("signed out while approving playback");
                 }
+                // Bound to the verified account when known; otherwise
+                // Spotify takes the account from the streaming token itself.
+                let account = self.settings().account_id;
                 let credentials = librespot_core::authentication::Credentials {
-                    username: Some(account),
+                    username: (!account.is_empty()).then_some(account),
                     auth_type: librespot_protocol::authentication::AuthenticationType::AUTHENTICATION_SPOTIFY_TOKEN,
                     auth_data: response.access_token.into_bytes(),
                 };
