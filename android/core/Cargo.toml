@@ -1,0 +1,51 @@
+[package]
+name = "spotifast-android"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Spotifast's playback engine and Spotify sign-in for the Android app"
+publish = false
+
+# Its own workspace: the desktop crate at the repository root stays untouched.
+[workspace]
+
+[lib]
+name = "spotifast_android"
+# cdylib for the APK; rlib so the host tests can link it.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+# Spotifast's own sign-in module (../../src/auth.rs) needs these.
+base64 = "0.22"
+rand = "0.9"
+sha2 = "0.10"
+urlencoding = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util"] }
+# Android has no system store rustls can read, so both reqwest and
+# librespot carry Mozilla's roots (webpki-roots) instead of native roots.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "json", "gzip", "http2"] }
+librespot-core = { version = "0.8", default-features = false, features = ["rustls-tls-webpki-roots"] }
+librespot-playback = { version = "0.8", default-features = false, features = ["rustls-tls-webpki-roots"] }
+librespot-connect = { version = "0.8", default-features = false, features = ["rustls-tls-webpki-roots"] }
+librespot-metadata = { version = "0.8", default-features = false, features = ["rustls-tls-webpki-roots"] }
+librespot-protocol = { version = "0.8", default-features = false }
+# The bridge to the Kotlin app.
+jni = "0.21"
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.15"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+opt-level = 3
+
+[dev-dependencies]
+# Spotifast's auth.rs tests run on a paused clock.
+tokio = { version = "1", features = ["test-util"] }

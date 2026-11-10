@@ -1,0 +1,92 @@
+name: Android
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "android/**"
+      - "src/auth.rs"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    name: Build the APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # The repository's rust-toolchain.toml picks the compiler.
+      - name: Rust for Android
+        working-directory: android/core
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add aarch64-linux-android x86_64-linux-android
+          cargo install cargo-ndk --locked
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "android/core -> target"
+
+      - name: Test the core
+        working-directory: android/core
+        run: cargo test --locked
+
+      - name: Build the core for Android
+        working-directory: android/core
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+        run: cargo ndk -t arm64-v8a -t x86_64 -o ../app/src/main/jniLibs build --release --locked
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Build the app
+        working-directory: android
+        env:
+          VERSION_CODE: ${{ github.run_number }}
+          # Optional: a private signing key from the repository's secrets.
+          SPOTIFAST_KEYSTORE_BASE64: ${{ secrets.SPOTIFAST_KEYSTORE_BASE64 }}
+          SPOTIFAST_KEYSTORE_PASSWORD: ${{ secrets.SPOTIFAST_KEYSTORE_PASSWORD }}
+          SPOTIFAST_KEY_ALIAS: ${{ secrets.SPOTIFAST_KEY_ALIAS }}
+          SPOTIFAST_KEY_PASSWORD: ${{ secrets.SPOTIFAST_KEY_PASSWORD }}
+        run: |
+          if [ -n "$SPOTIFAST_KEYSTORE_BASE64" ]; then
+            echo "$SPOTIFAST_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            export SPOTIFAST_KEYSTORE="$RUNNER_TEMP/release.jks"
+          else
+            unset SPOTIFAST_KEYSTORE_PASSWORD SPOTIFAST_KEY_ALIAS SPOTIFAST_KEY_PASSWORD
+          fi
+          gradle --no-daemon --stacktrace assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/Spotifast-android.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Spotifast-android
+          path: Spotifast-android.apk
+
+      - name: Publish "Android latest"
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete android-latest --yes --cleanup-tag || true
+          gh release create android-latest Spotifast-android.apk \
+            --title "Android latest" \
+            --target "$GITHUB_SHA" \
+            --latest \
+            --notes "Spotifast for Android, built from $GITHUB_SHA (build ${{ github.run_number }}). Download Spotifast-android.apk on your phone and open it. Each build installs over the previous one."
