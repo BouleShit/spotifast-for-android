@@ -7,7 +7,9 @@ description = "Spotifast's playback engine and Spotify sign-in for the Android a
 publish = false
 
 # Its own workspace: the desktop crate at the repository root stays untouched.
+# The vendored librespot is a workspace of its own.
 [workspace]
+exclude = ["vendor"]
 
 [lib]
 name = "spotifast_android"
@@ -40,10 +42,16 @@ jni = "0.21"
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.15"
 
-# librespot-core with one change: it presents the desktop platform on
-# Android (see vendor/README.md).
+# Spotifast's librespot fork, the revision the desktop app plays with, plus
+# one change: it presents the desktop platform on Android (vendor/README.md).
 [patch.crates-io]
-librespot-core = { path = "vendor/librespot-core" }
+librespot-audio = { path = "vendor/librespot/audio" }
+librespot-connect = { path = "vendor/librespot/connect" }
+librespot-core = { path = "vendor/librespot/core" }
+librespot-metadata = { path = "vendor/librespot/metadata" }
+librespot-oauth = { path = "vendor/librespot/oauth" }
+librespot-playback = { path = "vendor/librespot/playback" }
+librespot-protocol = { path = "vendor/librespot/protocol" }
 
 [profile.release]
 lto = "thin"

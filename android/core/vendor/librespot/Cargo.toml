@@ -1,0 +1,25 @@
+# Spotifast's librespot fork (github.com/crmne/librespot at
+# 3ba977f1f918582edce566cfc16617f8eccdfb1e, the revision the desktop app
+# uses), with only the crates the Android core needs. See ../README.md.
+[workspace]
+resolver = "2"
+members = ["audio", "connect", "core", "metadata", "oauth", "playback", "protocol"]
+
+[workspace.package]
+rust-version = "1.85"
+authors = ["Librespot Org"]
+license = "MIT"
+repository = "https://github.com/librespot-org/librespot"
+edition = "2024"
+
+[workspace.dependencies]
+librespot-audio = { version = "0.8.0", path = "audio", default-features = false }
+librespot-connect = { version = "0.8.0", path = "connect", default-features = false }
+librespot-core = { version = "0.8.0", path = "core", default-features = false }
+librespot-metadata = { version = "0.8.0", path = "metadata", default-features = false }
+librespot-oauth = { version = "0.8.0", path = "oauth", default-features = false }
+librespot-playback = { version = "0.8.0", path = "playback", default-features = false }
+librespot-protocol = { version = "0.8.0", path = "protocol", default-features = false }
+
+[workspace.lints]
+clippy.redundant_closure_for_method_calls = "warn"

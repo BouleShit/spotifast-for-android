@@ -22,6 +22,10 @@ fn level_for(target: &str) -> Level {
         Level::Debug
     } else if target.starts_with("librespot") {
         Level::Info
+    } else if target.starts_with("symphonia") {
+        // The decoder warns per frame on damaged audio and would push
+        // everything else out of the buffer.
+        Level::Error
     } else {
         Level::Warn
     }
@@ -114,6 +118,7 @@ mod tests {
         assert_eq!(level_for("librespot_core::login5"), Level::Info);
         assert_eq!(level_for("librespot_playback::player"), Level::Debug);
         assert_eq!(level_for("rustls::client"), Level::Warn);
+        assert_eq!(level_for("symphonia_bundle_mp3::demuxer"), Level::Error);
     }
 
     #[test]

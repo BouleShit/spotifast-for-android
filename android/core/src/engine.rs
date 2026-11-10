@@ -250,7 +250,7 @@ fn now_ms() -> u64 {
 }
 
 fn uri(id: &SpotifyUri) -> String {
-    id.to_uri().unwrap_or_default()
+    id.to_uri()
 }
 
 fn describe(item: &AudioItem) -> Value {
