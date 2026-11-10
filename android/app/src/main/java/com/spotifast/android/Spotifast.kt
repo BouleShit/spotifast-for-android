@@ -284,6 +284,7 @@ object Spotifast {
     }
 
     fun play() {
+        runCatching { Native.log("play requested") }
         val current = _player.value
         hold(playing = true)
         _player.value = current.copy(playing = true, at = System.currentTimeMillis())
@@ -298,6 +299,7 @@ object Spotifast {
     }
 
     fun pause() {
+        runCatching { Native.log("pause requested") }
         val current = _player.value
         val position = current.positionNow()
         hold(playing = false)

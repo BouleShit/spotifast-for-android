@@ -146,7 +146,10 @@ object WebPlayer {
                 _phase.value = Phase.Starting
                 log("not ready")
             }
-            "state" -> Spotifast.applyWebState(payload)
+            "state" -> {
+                log("state paused=${payload.optBoolean("paused")} loading=${payload.optBoolean("loading")} at ${payload.optLong("position")} ms")
+                Spotifast.applyWebState(payload)
+            }
             "connected" -> if (!payload.optBoolean("ok")) fail("Spotify's player couldn't connect.")
             "error" -> {
                 val type = payload.optString("kind")

@@ -77,6 +77,10 @@ class PlaybackService : LifecycleService() {
     }
 
     private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
+        runCatching { Native.log("audio focus change $change (web player: ${Spotifast.webMode.value})") }
+        // Spotify's web player manages focus itself, and taking it is what
+        // makes this app lose it: never pause it from here.
+        if (Spotifast.webMode.value) return@OnAudioFocusChangeListener
         when (change) {
             AudioManager.AUDIOFOCUS_LOSS -> {
                 resumeOnFocusGain = false
@@ -156,7 +160,13 @@ class PlaybackService : LifecycleService() {
     }
 
     private fun update(state: PlayerState) {
-        if (state.playing) requestFocus()
+        if (Spotifast.webMode.value) {
+            // The WebView asks Android for audio focus when it plays; holding
+            // it here too would make Android take it from one of them.
+            abandonFocus()
+        } else if (state.playing) {
+            requestFocus()
+        }
         val track = state.track
         if (track?.cover != coverUrl) {
             coverUrl = track?.cover
@@ -230,6 +240,13 @@ class PlaybackService : LifecycleService() {
                 update(Spotifast.player.value)
             }
         }
+    }
+
+    private fun abandonFocus() {
+        if (!hasFocus) return
+        focusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+        hasFocus = false
+        resumeOnFocusGain = false
     }
 
     private fun requestFocus() {
