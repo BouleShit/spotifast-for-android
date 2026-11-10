@@ -22,6 +22,9 @@ object Native {
     @JvmStatic external fun api(method: String, path: String, body: String?): String
     @JvmStatic external fun command(json: String)
     @JvmStatic external fun state(): String
+
+    /** The recent engine log, for the debug screen. */
+    @JvmStatic external fun logs(): String
     @JvmStatic external fun nextEvent(timeoutMs: Int): String?
     @JvmStatic external fun readPcm(buffer: ShortArray, timeoutMs: Int): Int
 }

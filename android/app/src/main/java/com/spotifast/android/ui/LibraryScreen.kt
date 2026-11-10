@@ -57,6 +57,8 @@ fun LibraryScreen(status: Status, open: (Route) -> Unit) {
     val scope = rememberCoroutineScope()
     var filter by rememberSaveable { mutableStateOf(0) }
     var menu by remember { mutableStateOf(false) }
+    var showLog by remember { mutableStateOf(false) }
+    if (showLog) DebugLogDialog(onDismiss = { showLog = false })
     val listState = rememberLazyListState()
 
     val playlists = remember { Paged(scope, "/v1/me/playlists?limit=50", itemOf = { Item.parse(it) }) }
@@ -107,6 +109,10 @@ fun LibraryScreen(status: Status, open: (Route) -> Unit) {
                             onClick = { menu = false },
                             enabled = false,
                         )
+                        DropdownMenuItem(text = { Text("Debug log") }, onClick = {
+                            menu = false
+                            showLog = true
+                        })
                         DropdownMenuItem(text = { Text("Sign out") }, onClick = {
                             menu = false
                             Spotifast.signOut()

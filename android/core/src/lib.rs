@@ -15,6 +15,7 @@ pub mod audio;
 pub mod core;
 pub mod engine;
 pub mod events;
+pub mod logbuf;
 
 use std::cell::RefCell;
 use std::panic::AssertUnwindSafe;
@@ -74,12 +75,7 @@ pub extern "system" fn Java_com_spotifast_android_Native_init<'local>(
     device_name: JString<'local>,
 ) {
     guard(&mut env, (), |env| {
-        #[cfg(target_os = "android")]
-        android_logger::init_once(
-            android_logger::Config::default()
-                .with_max_level(log::LevelFilter::Info)
-                .with_tag("Spotifast"),
-        );
+        logbuf::init();
         let data_dir = string(env, &data_dir)?;
         let cache_dir = string(env, &cache_dir)?;
         let device_name = string(env, &device_name)?;
@@ -199,6 +195,15 @@ pub extern "system" fn Java_com_spotifast_android_Native_command<'local>(
             .ok_or_else(|| anyhow!("Playback isn't connected yet."))?;
         engine.command(&command)
     })
+}
+
+/// The recent log, for the app's debug screen.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_spotifast_android_Native_logs<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    guard(&mut env, std::ptr::null_mut(), |env| java_string(env, &logbuf::text()))
 }
 
 /// The latest playback state as JSON.

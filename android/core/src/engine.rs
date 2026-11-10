@@ -165,6 +165,7 @@ impl Engine {
     /// One command from the interface. The interface has already shown its
     /// result (Spotifast is optimistic); this makes it true.
     pub fn command(&self, command: &Value) -> Result<()> {
+        log::info!("command {command} (active: {})", self.active.load(Ordering::SeqCst));
         let pcm = &self.core.pcm;
         let spirc = &self.spirc;
         let active = self.active.load(Ordering::SeqCst);
@@ -203,7 +204,10 @@ impl Engine {
             }
             other => bail!("unknown command {other:?}"),
         };
-        result.map_err(|error| anyhow!("{error}"))
+        result.map_err(|error| {
+            log::warn!("command failed: {error}");
+            anyhow!("{error}")
+        })
     }
 }
 
@@ -288,6 +292,9 @@ fn describe(item: &AudioItem) -> Value {
 async fn run_events(mut events: PlayerEventChannel, core: &'static Core, active: Arc<AtomicBool>) {
     let state = &core.events;
     while let Some(event) = events.recv().await {
+        if !matches!(event, PlayerEvent::PositionChanged { .. }) {
+            log::debug!("player event: {event:?}");
+        }
         match event {
             PlayerEvent::Playing { track_id, position_ms, .. } => {
                 core.pcm.set_paused(false);
