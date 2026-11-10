@@ -40,6 +40,11 @@ jni = "0.21"
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.15"
 
+# librespot-core with one change: it presents the desktop platform on
+# Android (see vendor/README.md).
+[patch.crates-io]
+librespot-core = { path = "vendor/librespot-core" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
