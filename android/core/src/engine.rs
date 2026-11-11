@@ -40,24 +40,8 @@ pub struct Engine {
 
 impl Engine {
     pub async fn connect(core: &'static Core, credentials: Credentials) -> Result<Self> {
-        let settings = core.settings();
-        let session_config = SessionConfig {
-            // The identity the playback grant was issued to, as on desktop.
-            client_id: auth::PLAYBACK_CLIENT_ID.to_string(),
-            device_id: settings.device_id.clone(),
-            tmp_dir: core.cache_dir.join("tmp"),
-            autoplay: Some(true),
-            ..SessionConfig::default()
-        };
-        let cache = Cache::new(
-            Some(core.librespot_dir()),
-            None,
-            Some(core.cache_dir.join("audio")),
-            Some(AUDIO_CACHE_LIMIT),
-        )
-        .map_err(|error| anyhow!("cannot open the playback cache: {error}"))?;
         core.set_step("starting the player");
-        let session = Session::new(session_config, Some(cache));
+        let session = new_session(core)?;
 
         let player_config = PlayerConfig {
             bitrate: Bitrate::Bitrate320,
@@ -149,6 +133,10 @@ impl Engine {
         })
     }
 
+    pub fn session(&self) -> Session {
+        self.session.clone()
+    }
+
     pub fn device_id(&self) -> &str {
         &self.device_id
     }
@@ -209,6 +197,28 @@ impl Engine {
             anyhow!("{error}")
         })
     }
+}
+
+/// A librespot session set up as Spotifast's desktop sets it up, with the
+/// credential and audio caches in the app's folders. Not yet connected.
+pub fn new_session(core: &'static Core) -> Result<Session> {
+    let settings = core.settings();
+    let session_config = SessionConfig {
+        // The identity the playback grant was issued to, as on desktop.
+        client_id: auth::PLAYBACK_CLIENT_ID.to_string(),
+        device_id: settings.device_id.clone(),
+        tmp_dir: core.cache_dir.join("tmp"),
+        autoplay: Some(true),
+        ..SessionConfig::default()
+    };
+    let cache = Cache::new(
+        Some(core.librespot_dir()),
+        None,
+        Some(core.cache_dir.join("audio")),
+        Some(AUDIO_CACHE_LIMIT),
+    )
+    .map_err(|error| anyhow!("cannot open the playback cache: {error}"))?;
+    Ok(Session::new(session_config, Some(cache)))
 }
 
 /// `{"context": uri, "track": uri | "index": n, "shuffle": bool}` or

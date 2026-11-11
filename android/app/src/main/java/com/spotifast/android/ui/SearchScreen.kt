@@ -116,7 +116,7 @@ fun SearchScreen(open: (Route) -> Unit) {
                 if (found.tracks.isNotEmpty()) {
                     item { SectionTitle("Songs") }
                     itemsIndexed(found.tracks, key = { index, track -> "t:$index:${track.uri}" }) { _, track ->
-                        TrackRow(track, current = track.uri == player.track?.uri, showImage = true) {
+                        TrackRow(track, current = track.uri == player.track?.uri, showImage = true, open = open) {
                             // Play the song inside its album, so the next ones follow.
                             if (track.albumUri.isNotEmpty()) Spotifast.playContext(track.albumUri, track)
                             else Spotifast.playTracks(listOf(track), 0)

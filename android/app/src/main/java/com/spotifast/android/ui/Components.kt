@@ -18,7 +18,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -96,12 +103,18 @@ fun Cover(url: String?, size: Dp, round: Boolean = false, corner: Dp = 6.dp) {
 }
 
 @Composable
-fun TrackRow(track: Track, current: Boolean, showImage: Boolean, onClick: () -> Unit) {
+fun TrackRow(
+    track: Track,
+    current: Boolean,
+    showImage: Boolean,
+    open: ((Route) -> Unit)? = null,
+    onClick: () -> Unit,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 7.dp),
+            .padding(start = 16.dp, end = 4.dp, top = 7.dp, bottom = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (showImage) {
@@ -134,6 +147,49 @@ fun TrackRow(track: Track, current: Boolean, showImage: Boolean, onClick: () -> 
         }
         Spacer(Modifier.width(12.dp))
         Text(formatTime(track.durationMs), color = TextDim, style = MaterialTheme.typography.bodySmall)
+        TrackMenu(track, open)
+    }
+}
+
+/** Queue, like, and where the song comes from. */
+@Composable
+fun TrackMenu(track: Track, open: ((Route) -> Unit)?) {
+    var expanded by remember { mutableStateOf(false) }
+    val liked by Spotifast.liked.collectAsStateWithLifecycle()
+    Box {
+        IconButton(onClick = {
+            expanded = true
+            Spotifast.refreshLiked(track.uri)
+        }) {
+            Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = TextDim)
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(text = { Text("Add to queue") }, onClick = {
+                expanded = false
+                Spotifast.addToQueue(track)
+            })
+            val isLiked = liked[track.uri] == true
+            DropdownMenuItem(
+                text = { Text(if (isLiked) "Remove from Liked Songs" else "Add to Liked Songs") },
+                onClick = {
+                    expanded = false
+                    Spotifast.toggleLike(track.uri)
+                },
+            )
+            if (open != null && track.albumUri.startsWith("spotify:album:")) {
+                DropdownMenuItem(text = { Text("Go to album") }, onClick = {
+                    expanded = false
+                    open(Route.Collection("album", track.albumUri.substringAfterLast(':'), track.albumUri, track.albumName, track.image))
+                })
+            }
+            val artist = track.artists.firstOrNull { it.uri.startsWith("spotify:artist:") }
+            if (open != null && artist != null) {
+                DropdownMenuItem(text = { Text("Go to ${artist.name}") }, onClick = {
+                    expanded = false
+                    open(Route.Collection("artist", artist.uri.substringAfterLast(':'), artist.uri, artist.name, null))
+                })
+            }
+        }
     }
 }
 

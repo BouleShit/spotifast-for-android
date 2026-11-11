@@ -1,5 +1,9 @@
 package com.spotifast.android.ui
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -20,6 +24,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.Devices
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.FormatQuote
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -37,6 +46,7 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -77,8 +87,13 @@ fun MiniPlayer(onOpen: () -> Unit) {
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(track.name, color = TextMain, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                val remote by Spotifast.remoteDevice.collectAsStateWithLifecycle()
                 Text(
-                    if (!state.active && state.connected && !state.playing) "Paused · ${track.artistLine}" else track.artistLine,
+                    when {
+                        !state.active && remote != null -> "On $remote · ${track.artistLine}"
+                        !state.active && state.connected && !state.playing -> "Paused · ${track.artistLine}"
+                        else -> track.artistLine
+                    },
                     color = TextSecondary,
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1,
@@ -111,12 +126,18 @@ fun MiniPlayer(onOpen: () -> Unit) {
 @Composable
 fun NowPlayingScreen(onClose: () -> Unit) {
     val state by Spotifast.player.collectAsStateWithLifecycle()
+    val remote by Spotifast.remoteDevice.collectAsStateWithLifecycle()
+    val liked by Spotifast.liked.collectAsStateWithLifecycle()
+    var panel by remember { mutableStateOf<PlayerPanel?>(null) }
     val track = state.track
     val now = rememberNow(state.playing)
     var dragging by remember { mutableStateOf<Float?>(null) }
     val duration = (track?.durationMs ?: 0).coerceAtLeast(1)
     val position = dragging?.toLong() ?: state.positionNow(now)
+    LaunchedEffect(track?.uri) { track?.uri?.let { Spotifast.refreshLiked(it) } }
+    BackHandler(enabled = panel != null) { panel = null }
 
+    Box(Modifier.fillMaxSize()) {
     Column(
         Modifier
             .fillMaxSize()
@@ -132,7 +153,11 @@ fun NowPlayingScreen(onClose: () -> Unit) {
                 Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Close", tint = TextMain, modifier = Modifier.size(30.dp))
             }
             Text(
-                if (state.active) "Playing on this phone" else "Spotify Connect",
+                when {
+                    state.active -> "Playing on this phone"
+                    remote != null -> "Playing on $remote"
+                    else -> "Spotify Connect"
+                },
                 color = TextSecondary,
                 style = MaterialTheme.typography.labelLarge,
                 modifier = Modifier.weight(1f),
@@ -150,21 +175,36 @@ fun NowPlayingScreen(onClose: () -> Unit) {
                 .background(Surface),
         )
         Spacer(Modifier.height(28.dp))
-        Text(
-            track?.name ?: "Nothing playing",
-            color = TextMain,
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Text(
-            track?.artistLine.orEmpty(),
-            color = TextSecondary,
-            style = MaterialTheme.typography.bodyLarge,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    track?.name ?: "Nothing playing",
+                    color = TextMain,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    track?.artistLine.orEmpty(),
+                    color = TextSecondary,
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (track != null) {
+                val isLiked = liked[track.uri] == true
+                IconButton(onClick = { Spotifast.toggleLike(track.uri) }) {
+                    Icon(
+                        if (isLiked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                        contentDescription = if (isLiked) "Remove from Liked Songs" else "Add to Liked Songs",
+                        tint = if (isLiked) Accent else TextSecondary,
+                        modifier = Modifier.size(28.dp),
+                    )
+                }
+            }
+        }
         Spacer(Modifier.height(16.dp))
         Slider(
             value = position.toFloat().coerceIn(0f, duration.toFloat()),
@@ -229,5 +269,44 @@ fun NowPlayingScreen(onClose: () -> Unit) {
             }
         }
         Spacer(Modifier.weight(1f))
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(bottom = 12.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+        ) {
+            PanelButton(Icons.Filled.FormatQuote, "Lyrics") { panel = PlayerPanel.Lyrics }
+            PanelButton(Icons.Filled.Devices, "Devices") { panel = PlayerPanel.Devices }
+            PanelButton(Icons.AutoMirrored.Filled.QueueMusic, "Up next") { panel = PlayerPanel.Queue }
+        }
+    }
+    AnimatedVisibility(
+        visible = panel != null,
+        enter = slideInVertically { it },
+        exit = slideOutVertically { it },
+    ) {
+        val shown = panel ?: PlayerPanel.Lyrics
+        PanelFrame(shown, onClose = { panel = null }) {
+            when (shown) {
+                PlayerPanel.Lyrics -> LyricsPanel()
+                PlayerPanel.Queue -> QueuePanel()
+                PlayerPanel.Devices -> DevicesPanel(onChosen = { panel = null })
+            }
+        }
+    }
+    }
+}
+
+@Composable
+private fun PanelButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
+    Column(
+        Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(icon, contentDescription = null, tint = TextSecondary)
+        Text(label, color = TextSecondary, style = MaterialTheme.typography.labelSmall)
     }
 }

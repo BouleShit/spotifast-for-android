@@ -157,7 +157,7 @@ fun CollectionScreen(route: Route.Collection, status: Status, open: (Route) -> U
             item { SectionTitle("Popular") }
         }
         itemsIndexed(tracks.items, key = { index, track -> "$index:${track.uri}" }) { _, track ->
-            TrackRow(track, current = track.uri == playingUri, showImage = route.kind != "album") {
+            TrackRow(track, current = track.uri == playingUri, showImage = route.kind != "album", open = open) {
                 // Artist pages and some Liked Songs libraries can't be started as a
                 // context through the Web API; the loaded list plays instead.
                 Spotifast.playContext(context, track, fallback = tracks.items.toList())

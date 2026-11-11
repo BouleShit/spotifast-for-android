@@ -132,6 +132,13 @@ data class NowTrack(
         }
 
         fun from(track: Track) = NowTrack(track.uri, track.name, track.artists, track.albumName, track.image, track.durationMs)
+
+        /** A Web API track object, with its large cover. */
+        fun fromApi(json: JSONObject?): NowTrack? {
+            val track = Track.parse(json) ?: return null
+            val big = bestImage(json?.optJSONObject("album")?.optJSONArray("images"))
+            return from(track).copy(cover = big ?: track.image)
+        }
     }
 }
 
@@ -184,3 +191,46 @@ fun formatTime(ms: Long): String {
     val seconds = (ms / 1000).coerceAtLeast(0)
     return "%d:%02d".format(seconds / 60, seconds % 60)
 }
+
+/** A Spotify Connect device from the Web API. */
+data class Device(
+    val id: String,
+    val name: String,
+    val type: String,
+    val active: Boolean,
+) {
+    companion object {
+        fun parse(json: JSONObject) = Device(
+            id = json.optString("id"),
+            name = json.optString("name"),
+            type = json.optString("type"),
+            active = json.optBoolean("is_active"),
+        )
+    }
+}
+
+/** A song's lyrics from Spotify; [synced] lines carry their start time. */
+data class Lyrics(val synced: Boolean, val lines: List<LyricLine>) {
+    /** The line being sung at [positionMs], or -1. */
+    fun activeLine(positionMs: Long): Int {
+        if (!synced) return -1
+        var found = -1
+        for ((index, line) in lines.withIndex()) {
+            val at = line.atMs ?: continue
+            if (at <= positionMs) found = index else break
+        }
+        return found
+    }
+
+    companion object {
+        fun parse(json: JSONObject): Lyrics {
+            val synced = json.optBoolean("synced")
+            val lines = json.optJSONArray("lines")?.objects()?.map {
+                LyricLine(if (it.isNull("ms")) null else it.optLong("ms"), it.optString("text"))
+            } ?: emptyList()
+            return Lyrics(synced, lines)
+        }
+    }
+}
+
+data class LyricLine(val atMs: Long?, val text: String)

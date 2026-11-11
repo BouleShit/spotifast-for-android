@@ -16,6 +16,7 @@ pub mod core;
 pub mod engine;
 pub mod events;
 pub mod logbuf;
+pub mod reads;
 
 use std::cell::RefCell;
 use std::panic::AssertUnwindSafe;
@@ -162,9 +163,10 @@ pub extern "system" fn Java_com_spotifast_android_Native_beginWebLogin<'local>(
 pub extern "system" fn Java_com_spotifast_android_Native_beginPlaybackLogin<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
+    start_player: jboolean,
 ) -> jstring {
     guard(&mut env, std::ptr::null_mut(), |env| {
-        let url = core::get()?.begin_playback_login()?;
+        let url = core::get()?.begin_playback_login(start_player != 0)?;
         java_string(env, &url)
     })
 }
@@ -245,6 +247,38 @@ pub extern "system" fn Java_com_spotifast_android_Native_log<'local>(
         let line = string(env, &line)?;
         log::info!(target: "spotifast_android::web", "{line}");
         Ok(())
+    })
+}
+
+/// A track's lyrics as JSON, or null when Spotify has none. Blocks.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_spotifast_android_Native_lyrics<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    track_uri: JString<'local>,
+) -> jstring {
+    guard(&mut env, std::ptr::null_mut(), |env| {
+        let track_uri = string(env, &track_uri)?;
+        let core = core::get()?;
+        match core.runtime.block_on(core.lyrics(&track_uri))? {
+            Some(lyrics) => java_string(env, &lyrics.to_string()),
+            None => Ok(std::ptr::null_mut()),
+        }
+    })
+}
+
+/// Spotify's Made for you and Your top mixes shelves as JSON. Blocks.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_spotifast_android_Native_homeShelves<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    timezone: JString<'local>,
+) -> jstring {
+    guard(&mut env, std::ptr::null_mut(), |env| {
+        let timezone = string(env, &timezone)?;
+        let core = core::get()?;
+        let shelves = core.runtime.block_on(core.home_shelves(&timezone))?;
+        java_string(env, &shelves.to_string())
     })
 }
 

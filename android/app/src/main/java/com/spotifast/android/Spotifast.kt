@@ -17,6 +17,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URLEncoder
+import java.util.TimeZone
 import kotlin.concurrent.thread
 
 class ApiException(val status: Int, message: String) : Exception(message)
@@ -60,6 +62,17 @@ object Spotifast {
     private val _webMode = MutableStateFlow(true)
     /** Spotify's web player plays (true), or the built-in librespot player. */
     val webMode: StateFlow<Boolean> = _webMode
+
+    private val _liked = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    /** Whether songs are in Liked Songs, as far as known. */
+    val liked: StateFlow<Map<String, Boolean>> = _liked
+
+    private val _remoteDevice = MutableStateFlow<String?>(null)
+    /** The device playing when it isn't this phone. */
+    val remoteDevice: StateFlow<String?> = _remoteDevice
+
+    private val lyricsCache = HashMap<String, Lyrics?>()
+    @Volatile private var home: Pair<Long, HomeShelves>? = null
 
     private val cache = object : LinkedHashMap<String, Pair<Long, JSONObject>>(64, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<Long, JSONObject>>?) = size > 64
@@ -108,7 +121,7 @@ object Spotifast {
             "playback_connecting" -> {
                 _status.value = _status.value.copy(connecting = true, connectingStep = event.optString("step"))
             }
-            "web_signed_in", "playback_ready" -> {
+            "web_signed_in", "playback_ready", "reads_ready" -> {
                 if (event.optString("type") == "playback_ready") {
                     _status.value = _status.value.copy(connecting = false, connectingStep = "")
                 }
@@ -226,7 +239,7 @@ object Spotifast {
 
     suspend fun beginPlaybackLogin(): String? = withContext(Dispatchers.IO) {
         try {
-            Native.beginPlaybackLogin().also { beganSignIn() }
+            Native.beginPlaybackLogin(!_webMode.value).also { beganSignIn() }
         } catch (error: Throwable) {
             _messages.tryEmit(error.message ?: "Playback setup failed")
             null
@@ -289,7 +302,9 @@ object Spotifast {
         hold(playing = true)
         _player.value = current.copy(playing = true, at = System.currentTimeMillis())
         PlaybackService.ensureStarted(app)
-        if (!_webMode.value) {
+        if (playingElsewhere()) {
+            webCall("/v1/me/player/play")
+        } else if (!_webMode.value) {
             command(JSONObject().put("cmd", "play"))
         } else if (reported.active) {
             WebPlayer.resume()
@@ -304,26 +319,42 @@ object Spotifast {
         val position = current.positionNow()
         hold(playing = false)
         _player.value = current.copy(playing = false, position = position, at = System.currentTimeMillis())
-        if (_webMode.value) WebPlayer.pause() else command(JSONObject().put("cmd", "pause").put("position", position))
+        when {
+            playingElsewhere() -> webCall("/v1/me/player/pause")
+            _webMode.value -> WebPlayer.pause()
+            else -> command(JSONObject().put("cmd", "pause").put("position", position))
+        }
     }
 
     fun next() {
-        if (_webMode.value) WebPlayer.next() else command(JSONObject().put("cmd", "next"))
+        when {
+            playingElsewhere() -> webCall("/v1/me/player/next", "POST")
+            _webMode.value -> WebPlayer.next()
+            else -> command(JSONObject().put("cmd", "next"))
+        }
     }
 
     fun previous() {
-        if (_webMode.value) WebPlayer.previous() else command(JSONObject().put("cmd", "prev"))
+        when {
+            playingElsewhere() -> webCall("/v1/me/player/previous", "POST")
+            _webMode.value -> WebPlayer.previous()
+            else -> command(JSONObject().put("cmd", "prev"))
+        }
     }
 
     fun seek(positionMs: Long) {
         _player.value = _player.value.copy(position = positionMs, at = System.currentTimeMillis())
-        if (_webMode.value) WebPlayer.seek(positionMs) else command(JSONObject().put("cmd", "seek").put("position", positionMs))
+        when {
+            playingElsewhere() -> webCall("/v1/me/player/seek?position_ms=$positionMs")
+            _webMode.value -> WebPlayer.seek(positionMs)
+            else -> command(JSONObject().put("cmd", "seek").put("position", positionMs))
+        }
     }
 
     fun setShuffle(on: Boolean) {
         _player.value = _player.value.copy(shuffle = on)
-        if (_webMode.value) {
-            webPut("/v1/me/player/shuffle?state=$on&device_id=${WebPlayer.deviceId.orEmpty()}")
+        if (_webMode.value || playingElsewhere()) {
+            webCall("/v1/me/player/shuffle?state=$on${deviceParam()}")
         } else {
             command(JSONObject().put("cmd", "shuffle").put("on", on))
         }
@@ -336,8 +367,8 @@ object Spotifast {
             else -> "off"
         }
         _player.value = _player.value.copy(repeat = next)
-        if (_webMode.value) {
-            webPut("/v1/me/player/repeat?state=$next&device_id=${WebPlayer.deviceId.orEmpty()}")
+        if (_webMode.value || playingElsewhere()) {
+            webCall("/v1/me/player/repeat?state=$next${deviceParam()}")
         } else {
             command(JSONObject().put("cmd", "repeat").put("mode", next))
         }
@@ -350,7 +381,7 @@ object Spotifast {
             return
         }
         val device = WebPlayer.deviceId ?: return notReady()
-        webPut("/v1/me/player", JSONObject().put("device_ids", JSONArray().put(device)).put("play", true))
+        webCall("/v1/me/player", body = JSONObject().put("device_ids", JSONArray().put(device)).put("play", true))
     }
 
     /**
@@ -415,14 +446,163 @@ object Spotifast {
         api("/v1/me/player/play?device_id=$device", "PUT", JSONObject().put("uris", uris).toString())
     }
 
-    private fun webPut(path: String, body: JSONObject? = null) {
+    private fun webCall(path: String, method: String = "PUT", body: JSONObject? = null) {
         scope.launch {
             try {
-                api(path, "PUT", body?.toString())
+                apiText(path, method, body?.toString())
             } catch (error: Throwable) {
                 playFailed(error)
             }
         }
+    }
+
+    /** Music plays on another of the account's devices, not this phone. */
+    private fun playingElsewhere() = !reported.active && _remoteDevice.value != null
+
+    /** Targets this phone's web player when it is the one playing. */
+    private fun deviceParam(): String {
+        val device = WebPlayer.deviceId
+        return if (_webMode.value && reported.active && device != null) "&device_id=$device" else ""
+    }
+
+    private fun enc(value: String): String = URLEncoder.encode(value, "UTF-8")
+
+    // ------------------------------------------------------- likes and queue
+
+    /** Asks Spotify whether [uri] is in Liked Songs. */
+    fun refreshLiked(uri: String) {
+        if (uri.isEmpty()) return
+        scope.launch {
+            try {
+                val answer = try {
+                    apiText("/v1/me/library/contains?uris=${enc(uri)}", "GET")
+                } catch (error: ApiException) {
+                    // The older endpoint, for tracks.
+                    apiText("/v1/me/tracks/contains?ids=${enc(uri.substringAfterLast(':'))}", "GET")
+                }
+                _liked.value = _liked.value + (uri to JSONArray(answer).optBoolean(0))
+            } catch (error: Throwable) {
+                Log.w(TAG, "liked check", error)
+            }
+        }
+    }
+
+    fun toggleLike(uri: String) {
+        if (uri.isEmpty()) return
+        val was = _liked.value[uri] ?: false
+        _liked.value = _liked.value + (uri to !was)
+        val method = if (was) "DELETE" else "PUT"
+        scope.launch {
+            try {
+                try {
+                    apiText("/v1/me/library?uris=${enc(uri)}", method)
+                } catch (error: ApiException) {
+                    apiText("/v1/me/tracks?ids=${enc(uri.substringAfterLast(':'))}", method)
+                }
+                synchronized(cache) { cache.keys.removeAll { it.startsWith("/v1/me/tracks") } }
+                _messages.tryEmit(if (was) "Removed from Liked Songs" else "Added to Liked Songs")
+            } catch (error: Throwable) {
+                _liked.value = _liked.value + (uri to was)
+                _messages.tryEmit(error.message ?: "Couldn't change Liked Songs")
+            }
+        }
+    }
+
+    fun addToQueue(track: Track) {
+        scope.launch {
+            try {
+                apiText("/v1/me/player/queue?uri=${enc(track.uri)}${deviceParam()}", "POST")
+                _messages.tryEmit("Added to queue")
+            } catch (error: Throwable) {
+                _messages.tryEmit(
+                    if (error is ApiException && error.status == 404) "Start playing something first."
+                    else error.message ?: "Couldn't add to queue",
+                )
+            }
+        }
+    }
+
+    /** What plays next, from Spotify. */
+    suspend fun queue(): List<Track> =
+        api("/v1/me/player/queue", fresh = true).optJSONArray("queue")?.objects()?.mapNotNull { Track.parse(it) }.orEmpty()
+
+    // ---------------------------------------------------------------- devices
+
+    suspend fun devices(): List<Device> =
+        api("/v1/me/player/devices", fresh = true).optJSONArray("devices")?.objects()
+            ?.map { Device.parse(it) }?.filter { it.id.isNotEmpty() }.orEmpty()
+
+    /** Moves playback to [device]. */
+    fun transferTo(device: Device) {
+        val local = device.id == WebPlayer.deviceId
+        if (!local) _remoteDevice.value = device.name
+        webCall("/v1/me/player", body = JSONObject().put("device_ids", JSONArray().put(device.id)).put("play", true))
+    }
+
+    /**
+     * Reads what another device plays, so this phone can show and control
+     * it. Called every few seconds while the app is open.
+     */
+    suspend fun pollRemote() {
+        if (reported.active) {
+            _remoteDevice.value = null
+            return
+        }
+        val text = try {
+            apiText("/v1/me/player", "GET")
+        } catch (error: Throwable) {
+            return
+        }
+        val json = if (text.isBlank()) null else runCatching { JSONObject(text) }.getOrNull()
+        val device = json?.optJSONObject("device")
+        val item = json?.optJSONObject("item")
+        if (json == null || device == null || item == null) {
+            _remoteDevice.value = null
+            return
+        }
+        // This phone's own player reports itself.
+        if (device.optString("id") == WebPlayer.deviceId || reported.active) return
+        _remoteDevice.value = device.optString("name").ifEmpty { "another device" }
+        applyReported(
+            PlayerState(
+                connected = true,
+                active = false,
+                playing = json.optBoolean("is_playing"),
+                position = json.optLong("progress_ms"),
+                at = System.currentTimeMillis(),
+                track = NowTrack.fromApi(item),
+                shuffle = json.optBoolean("shuffle_state"),
+                repeat = json.optString("repeat_state", "off"),
+            ),
+        )
+    }
+
+    // ------------------------------------------------------- lyrics and Home
+
+    /** Spotify's lyrics for a song, or null when it has none. Throws when they can't be read. */
+    suspend fun lyrics(uri: String): Lyrics? = withContext(Dispatchers.IO) {
+        val known = synchronized(lyricsCache) { lyricsCache.containsKey(uri) }
+        if (known) return@withContext synchronized(lyricsCache) { lyricsCache[uri] }
+        val found = Native.lyrics(uri)?.let { Lyrics.parse(JSONObject(it)) }
+        synchronized(lyricsCache) { lyricsCache[uri] = found }
+        found
+    }
+
+    data class HomeShelves(val madeForYou: List<Item>, val topMixes: List<Item>)
+
+    /** Made for you and Your top mixes, kept ten minutes. */
+    suspend fun homeShelves(fresh: Boolean = false): HomeShelves = withContext(Dispatchers.IO) {
+        val kept = home
+        if (!fresh && kept != null && SystemClock.elapsedRealtime() - kept.first < 10 * 60 * 1000L) {
+            return@withContext kept.second
+        }
+        val json = JSONObject(Native.homeShelves(TimeZone.getDefault().id))
+        val shelves = HomeShelves(
+            madeForYou = json.optJSONArray("madeForYou")?.objects()?.mapNotNull { Item.parse(it) }.orEmpty(),
+            topMixes = json.optJSONArray("topMixes")?.objects()?.mapNotNull { Item.parse(it) }.orEmpty(),
+        )
+        home = SystemClock.elapsedRealtime() to shelves
+        shelves
     }
 
     private fun playFailed(error: Throwable) {
@@ -507,14 +687,9 @@ object Spotifast {
     // ----------------------------------------------------------------- Web API
 
     /** A Web API request; GET answers are kept for a few minutes so going back is instant. */
-    suspend fun api(path: String, method: String = "GET", body: String? = null, fresh: Boolean = false): JSONObject =
+    /** A Web API request's raw body; throws [ApiException] unless Spotify answered 2xx. */
+    suspend fun apiText(path: String, method: String = "GET", body: String? = null): String =
         withContext(Dispatchers.IO) {
-            if (method == "GET" && !fresh) {
-                val cached = synchronized(cache) { cache[path] }
-                if (cached != null && SystemClock.elapsedRealtime() - cached.first < CACHE_MS) {
-                    return@withContext cached.second
-                }
-            }
             val raw = Native.api(method, path, body)
             val split = raw.indexOf('\n')
             val code = raw.substring(0, split).toInt()
@@ -523,6 +698,18 @@ object Spotifast {
                 val message = runCatching { JSONObject(text).optJSONObject("error")?.optString("message") }.getOrNull()
                 throw ApiException(code, message?.takeIf { it.isNotEmpty() } ?: "Spotify answered $code")
             }
+            text
+        }
+
+    suspend fun api(path: String, method: String = "GET", body: String? = null, fresh: Boolean = false): JSONObject =
+        withContext(Dispatchers.IO) {
+            if (method == "GET" && !fresh) {
+                val cached = synchronized(cache) { cache[path] }
+                if (cached != null && SystemClock.elapsedRealtime() - cached.first < CACHE_MS) {
+                    return@withContext cached.second
+                }
+            }
+            val text = apiText(path, method, body)
             val json = if (text.isBlank()) JSONObject() else JSONObject(text)
             if (method == "GET") synchronized(cache) { cache[path] = SystemClock.elapsedRealtime() to json }
             json

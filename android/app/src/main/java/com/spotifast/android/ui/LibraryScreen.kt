@@ -59,9 +59,7 @@ fun LibraryScreen(status: Status, open: (Route) -> Unit) {
     val scope = rememberCoroutineScope()
     var filter by rememberSaveable { mutableStateOf(0) }
     var menu by remember { mutableStateOf(false) }
-    var showLog by remember { mutableStateOf(false) }
     val webMode by Spotifast.webMode.collectAsStateWithLifecycle()
-    if (showLog) DebugLogDialog(onDismiss = { showLog = false })
     val listState = rememberLazyListState()
 
     val playlists = remember { Paged(scope, "/v1/me/playlists?limit=50", itemOf = { Item.parse(it) }) }
@@ -112,16 +110,9 @@ fun LibraryScreen(status: Status, open: (Route) -> Unit) {
                             onClick = { menu = false },
                             enabled = false,
                         )
-                        DropdownMenuItem(
-                            text = { Text(if (webMode) "Use the built-in player" else "Use Spotify's web player") },
-                            onClick = {
-                                menu = false
-                                Spotifast.setWebMode(!webMode)
-                            },
-                        )
-                        DropdownMenuItem(text = { Text("Debug log") }, onClick = {
+                        DropdownMenuItem(text = { Text("Settings") }, onClick = {
                             menu = false
-                            showLog = true
+                            open(Route.Settings)
                         })
                         DropdownMenuItem(text = { Text("Sign out") }, onClick = {
                             menu = false

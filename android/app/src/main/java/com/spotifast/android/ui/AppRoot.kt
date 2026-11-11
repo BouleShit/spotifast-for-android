@@ -33,6 +33,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.view.ViewGroup
+import androidx.compose.material.icons.filled.Home
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.key
 import androidx.compose.ui.unit.dp
@@ -43,8 +48,16 @@ import com.spotifast.android.WebPlayer
 sealed interface Route {
     val key: String
 
+    data object Home : Route {
+        override val key = "home"
+    }
+
     data object Library : Route {
         override val key = "library"
+    }
+
+    data object Settings : Route {
+        override val key = "settings"
     }
 
     data object Search : Route {
@@ -88,7 +101,13 @@ private fun MainScreen(snackbar: SnackbarHostState) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var showPlayer by rememberSaveable { mutableStateOf(false) }
     // One back stack per tab, so switching tabs keeps your place.
-    val stacks = remember { listOf(mutableStateListOf<Route>(Route.Library), mutableStateListOf<Route>(Route.Search)) }
+    val stacks = remember {
+        listOf(
+            mutableStateListOf<Route>(Route.Home),
+            mutableStateListOf<Route>(Route.Library),
+            mutableStateListOf<Route>(Route.Search),
+        )
+    }
     val stack = stacks[tab]
     val current = stack.last()
     val holder = rememberSaveableStateHolder()
@@ -105,6 +124,17 @@ private fun MainScreen(snackbar: SnackbarHostState) {
     }
 
     val webPlayerView by WebPlayer.view.collectAsStateWithLifecycle()
+    // While the app is on screen, follow music playing on the account's
+    // other devices, so it can be shown and controlled from here.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                Spotifast.pollRemote()
+                delay(if (Spotifast.remoteDevice.value != null) 5_000 else 10_000)
+            }
+        }
+    }
     Box(Modifier.fillMaxSize()) {
         // Spotify's web player, attached (one pixel, behind everything)
         // while the app is open; it keeps playing detached in the background.
@@ -126,7 +156,7 @@ private fun MainScreen(snackbar: SnackbarHostState) {
                 Column(Modifier.background(Window)) {
                     MiniPlayer(onOpen = { showPlayer = true })
                     NavigationBar(containerColor = Window) {
-                        listOf("Library" to Icons.Filled.LibraryMusic, "Search" to Icons.Filled.Search)
+                        listOf("Home" to Icons.Filled.Home, "Library" to Icons.Filled.LibraryMusic, "Search" to Icons.Filled.Search)
                             .forEachIndexed { index, (label, icon) ->
                                 NavigationBarItem(
                                     selected = tab == index,
@@ -155,7 +185,9 @@ private fun MainScreen(snackbar: SnackbarHostState) {
             Box(Modifier.padding(padding).fillMaxSize()) {
                 holder.SaveableStateProvider("$tab/${current.key}") {
                     when (current) {
+                        Route.Home -> HomeScreen(status, open)
                         Route.Library -> LibraryScreen(status, open)
+                        Route.Settings -> SettingsScreen(status)
                         Route.Search -> SearchScreen(open)
                         is Route.Collection -> CollectionScreen(current, status, open)
                     }

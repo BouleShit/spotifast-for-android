@@ -20,7 +20,14 @@ object Native {
     @JvmStatic external fun status(): String
     @JvmStatic external fun setClientId(clientId: String)
     @JvmStatic external fun beginWebLogin(): String
-    @JvmStatic external fun beginPlaybackLogin(): String
+    /** With [startPlayer], the built-in player starts; otherwise only lyrics and Home's session. */
+    @JvmStatic external fun beginPlaybackLogin(startPlayer: Boolean): String
+
+    /** Lyrics JSON for a track, or null. Blocks. */
+    @JvmStatic external fun lyrics(trackUri: String): String?
+
+    /** Made for you and Your top mixes JSON. Blocks. */
+    @JvmStatic external fun homeShelves(timezone: String): String
     @JvmStatic external fun reconnect()
     @JvmStatic external fun signOut()
 

@@ -87,6 +87,9 @@ pub struct Core {
     /// What the playback connection is doing, for the interface and for
     /// the error when it stalls.
     step: Mutex<String>,
+    /// A session that plays nothing, for lyrics and Home while Spotify's
+    /// web player plays (see reads.rs).
+    pub(crate) reader: tokio::sync::Mutex<Option<librespot_core::Session>>,
     web_login: Mutex<Option<watch::Sender<bool>>>,
     playback_login: Mutex<Option<watch::Sender<bool>>>,
 }
@@ -144,6 +147,7 @@ pub fn init(data_dir: &str, cache_dir: &str, device_name: &str) -> Result<&'stat
         engine: Mutex::new(None),
         connecting: tokio::sync::Mutex::new(()),
         step: Mutex::new(String::new()),
+        reader: tokio::sync::Mutex::new(None),
         web_login: Mutex::new(None),
         playback_login: Mutex::new(None),
         data_dir,
@@ -238,7 +242,7 @@ impl Core {
         self.events.reset_state();
     }
 
-    fn saved_playback_credentials(&self) -> Option<librespot_core::authentication::Credentials> {
+    pub(crate) fn saved_playback_credentials(&self) -> Option<librespot_core::authentication::Credentials> {
         librespot_core::cache::Cache::new(Some(self.librespot_dir()), None, None, None)
             .ok()?
             .credentials()
@@ -413,7 +417,9 @@ impl Core {
     // --------------------------------------------------------------- Playback
 
     /// Starts the playback approval and returns the URL to open.
-    pub fn begin_playback_login(&'static self) -> Result<String> {
+    /// With `start_player`, the built-in player starts once approved;
+    /// otherwise the grant only signs in a session for lyrics and Home.
+    pub fn begin_playback_login(&'static self, start_player: bool) -> Result<String> {
         if self.runtime.block_on(async { self.web.lock().await.is_none() }) {
             bail!("Sign in with your Spotify app first.");
         }
@@ -444,7 +450,13 @@ impl Core {
                     auth_type: librespot_protocol::authentication::AuthenticationType::AUTHENTICATION_SPOTIFY_TOKEN,
                     auth_data: response.access_token.into_bytes(),
                 };
-                self.connect_engine(credentials).await
+                if start_player {
+                    self.connect_engine(credentials).await
+                } else {
+                    self.connect_reader(credentials).await?;
+                    self.events.emit(json!({ "type": "reads_ready" }));
+                    Ok(())
+                }
             }
             .await;
             if let Err(error) = outcome {
@@ -544,6 +556,7 @@ impl Core {
         if let Some(engine) = self.engine.lock().unwrap_or_else(|p| p.into_inner()).take() {
             engine.shutdown();
         }
+        self.drop_reader().await;
         let _ = std::fs::remove_dir_all(self.librespot_dir());
         self.events.reset_state();
     }
